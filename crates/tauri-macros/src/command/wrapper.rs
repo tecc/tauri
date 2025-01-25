@@ -7,15 +7,8 @@ use std::env::var;
 use heck::{ToLowerCamelCase, ToSnakeCase};
 use proc_macro::TokenStream;
 use proc_macro2::{Ident, Span, TokenStream as TokenStream2};
-use quote::{format_ident, quote, quote_spanned};
-use syn::{
-  ext::IdentExt,
-  parse::{Parse, ParseStream},
-  parse_macro_input,
-  punctuated::Punctuated,
-  spanned::Spanned,
-  Expr, ExprLit, FnArg, ItemFn, Lit, Meta, Pat, Token, Visibility,
-};
+use quote::{format_ident, quote, quote_spanned, ToTokens};
+use syn::{ext::IdentExt, parse::{Parse, ParseStream}, parse_macro_input, punctuated::Punctuated, spanned::Spanned, Expr, ExprLit, FnArg, ItemFn, Lit, LitStr, Meta, Pat, Token, Visibility};
 
 enum WrapperAttributeKind {
   Meta(Meta),
@@ -38,6 +31,7 @@ struct WrapperAttributes {
   root: TokenStream2,
   execution_context: ExecutionContext,
   argument_case: ArgumentCase,
+  name: Option<LitStr>,
 }
 
 impl Parse for WrapperAttributes {
@@ -46,6 +40,7 @@ impl Parse for WrapperAttributes {
       root: quote!(::tauri),
       execution_context: ExecutionContext::Blocking,
       argument_case: ArgumentCase::Camel,
+      name: None
     };
 
     let attrs = Punctuated::<WrapperAttributeKind, Token![,]>::parse_terminated(input)?;
@@ -87,12 +82,19 @@ impl Parse for WrapperAttributes {
                 quote!(#ident)
               };
             }
+          } else if v.path.is_ident("name") {
+            if let Expr::Lit(ExprLit {
+              lit: Lit::Str(s),
+              attrs: _,
+            }) = v.value {
+              wrapper_attributes.name = Some(s);
+            }
           }
         }
         WrapperAttributeKind::Meta(Meta::Path(_)) => {
           return Err(syn::Error::new(
             input.span(),
-            "unexpected input, expected one of `rename_all`, `root`, `async`",
+            "unexpected input, expected one of `rename_all`, `root`, `async`, `name`",
           ));
         }
         WrapperAttributeKind::Async => {
@@ -130,6 +132,7 @@ pub fn wrapper(attributes: TokenStream, item: TokenStream) -> TokenStream {
   let mut attrs = parse_macro_input!(attributes as WrapperAttributes);
   let function = parse_macro_input!(item as ItemFn);
   let wrapper = super::format_command_wrapper(&function.sig.ident);
+  let info = super::format_command_info(&function.sig.ident);
   let visibility = &function.vis;
 
   if function.sig.asyncness.is_some() {
@@ -261,11 +264,30 @@ pub fn wrapper(attributes: TokenStream, item: TokenStream) -> TokenStream {
     quote!()
   };
 
+  // Normalise the name to always be a string literal... eventually
+  let name = attrs.name.map(ToTokens::into_token_stream).unwrap_or_else(|| {
+    let ident = &function.sig.ident;
+    quote!(stringify!(#ident))
+  });
+
   // Rely on rust 2018 edition to allow importing a macro from a path.
   quote!(
     #async_command_check
 
     #function
+
+    #[doc(hidden)]
+    #[allow(non_camel_case_types)]
+    #visibility struct #info {
+      pub name: &'static str,
+      __private: ()
+    }
+    #[doc(hidden)]
+    #[allow(non_upper_case_globals)]
+    #visibility static #info: #info = #info {
+      name: #name,
+      __private: ()
+    };
 
     #maybe_macro_export
     #[doc(hidden)]

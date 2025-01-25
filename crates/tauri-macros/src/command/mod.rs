@@ -14,6 +14,9 @@ mod wrapper;
 fn format_command_wrapper(function: &Ident) -> Ident {
   quote::format_ident!("__cmd__{}", function)
 }
+fn format_command_info(function: &Ident) -> Ident {
+  quote::format_ident!("__cmd_info__{}", function)
+}
 
 /// This function will panic if the passed [`syn::Path`] does not have any segments.
 fn path_to_command(path: &mut Path) -> &mut PathSegment {
