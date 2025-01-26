@@ -223,10 +223,16 @@ pub fn wrapper(attributes: TokenStream, item: TokenStream) -> TokenStream {
     .map(|name| quote!(::core::option::Option::Some(#name)))
     .unwrap_or_else(|| quote!(::core::option::Option::None));
 
+  // Normalise the name to always be a string literal... eventually
+  let command_name = attrs.name.as_ref().map(ToTokens::to_token_stream).unwrap_or_else(|| {
+    let ident = &function.sig.ident;
+    quote!(stringify!(#ident))
+  });
+
   let body = match attrs.execution_context {
-    ExecutionContext::Async => body_async(&plugin_name, &function, &invoke, &attrs)
+    ExecutionContext::Async => body_async(&plugin_name, &command_name, &function, &invoke, &attrs)
       .unwrap_or_else(syn::Error::into_compile_error),
-    ExecutionContext::Blocking => body_blocking(&plugin_name, &function, &invoke, &attrs)
+    ExecutionContext::Blocking => body_blocking(&plugin_name, &command_name, &function, &invoke, &attrs)
       .unwrap_or_else(syn::Error::into_compile_error),
   };
 
@@ -264,12 +270,6 @@ pub fn wrapper(attributes: TokenStream, item: TokenStream) -> TokenStream {
     quote!()
   };
 
-  // Normalise the name to always be a string literal... eventually
-  let name = attrs.name.map(ToTokens::into_token_stream).unwrap_or_else(|| {
-    let ident = &function.sig.ident;
-    quote!(stringify!(#ident))
-  });
-
   // Rely on rust 2018 edition to allow importing a macro from a path.
   quote!(
     #async_command_check
@@ -285,7 +285,7 @@ pub fn wrapper(attributes: TokenStream, item: TokenStream) -> TokenStream {
     #[doc(hidden)]
     #[allow(non_upper_case_globals)]
     #visibility static #info: #info = #info {
-      name: #name,
+      name: #command_name,
       __private: ()
     };
 
@@ -320,6 +320,7 @@ pub fn wrapper(attributes: TokenStream, item: TokenStream) -> TokenStream {
 /// [`tauri::command`]: https://docs.rs/tauri/*/tauri/runtime/index.html
 fn body_async(
   plugin_name: &TokenStream2,
+  command_name: &TokenStream2,
   function: &ItemFn,
   invoke: &Invoke,
   attributes: &WrapperAttributes,
@@ -329,7 +330,7 @@ fn body_async(
     resolver,
     acl,
   } = invoke;
-  parse_args(plugin_name, function, message, acl, attributes).map(|args| {
+  parse_args(plugin_name, command_name, function, message, acl, attributes).map(|args| {
     #[cfg(feature = "tracing")]
     quote! {
       use tracing::Instrument;
@@ -363,6 +364,7 @@ fn body_async(
 /// [`tauri::command`]: https://docs.rs/tauri/*/tauri/runtime/index.html
 fn body_blocking(
   plugin_name: &TokenStream2,
+  command_name: &TokenStream2,
   function: &ItemFn,
   invoke: &Invoke,
   attributes: &WrapperAttributes,
@@ -372,7 +374,7 @@ fn body_blocking(
     resolver,
     acl,
   } = invoke;
-  let args = parse_args(plugin_name, function, message, acl, attributes)?;
+  let args = parse_args(plugin_name, command_name, function, message, acl, attributes)?;
 
   // the body of a `match` to early return any argument that wasn't successful in parsing.
   let match_body = quote!({
@@ -398,6 +400,7 @@ fn body_blocking(
 /// Parse all arguments for the command wrapper to use from the signature of the command function.
 fn parse_args(
   plugin_name: &TokenStream2,
+  command_name: &TokenStream2,
   function: &ItemFn,
   message: &Ident,
   acl: &Ident,
@@ -410,7 +413,7 @@ fn parse_args(
     .map(|arg| {
       parse_arg(
         plugin_name,
-        &function.sig.ident,
+        command_name,
         arg,
         message,
         acl,
@@ -423,7 +426,7 @@ fn parse_args(
 /// Transform a [`FnArg`] into a command argument.
 fn parse_arg(
   plugin_name: &TokenStream2,
-  command: &Ident,
+  command: &TokenStream2,
   arg: &FnArg,
   message: &Ident,
   acl: &Ident,
@@ -476,7 +479,7 @@ fn parse_arg(
   Ok(quote!(#root::ipc::CommandArg::from_command(
     #root::ipc::CommandItem {
       plugin: #plugin_name,
-      name: stringify!(#command),
+      name: #command,
       key: #key,
       message: &#message,
       acl: &#acl,
